@@ -1,0 +1,65 @@
+# Maps modular operators to their component controllers for manifest validation.
+# Refer tools/modular-operators-manifest-validator/README.md#how-to-configure
+
+modular_operators:
+  odh-ai-gateway-operator:
+    controllers:
+      odh-llm-d-batch-gateway-operator:
+        src: config/
+        dest: config/manifests/batchgateway/
+  odh-mcp-lifecycle-module-operator:
+    controllers:
+      odh-mcp-lifecycle-operator:
+        src: config/
+        dest: config/manifests/mcp-lifecycle-operator/
+  odh-workbenches-operator:
+    controllers:
+      odh-kf-notebook-controller:
+        src: components/notebook-controller/config/
+        dest: opt/manifests/workbenches/kf-notebook-controller/
+      odh-notebook-controller:
+        src: components/odh-notebook-controller/config/
+        dest: opt/manifests/workbenches/odh-notebook-controller/
+      notebooks:
+        src: manifests/
+        dest: opt/manifests/workbenches/notebooks/
+        ref_type: branch
+        git.url: https://github.com/red-hat-data-services/notebooks
+  odh-kserve-module-operator:
+    controllers:
+      odh-kserve-controller:
+        src: config/
+        dest: config/
+      odh-model-controller:
+        src: config/
+        dest: kserve-module/prefetched-manifests-rhoai/modelcontroller/
+      odh-workload-variant-autoscaler-controller:
+        src: legacy/config/
+        dest: kserve-module/prefetched-manifests-rhoai/wva/
+  odh-dashboard-operator:
+    controllers:
+      odh-dashboard:
+        src: manifests/
+        dest: manifests/
+  odh-ogx-module-operator:
+    controllers:
+      odh-ogx-k8s-operator:
+        src: config/
+        dest: config/
+  odh-feast-module-operator:
+    controllers:
+      odh-feast-operator:
+        src: infra/feast-operator/config/
+        dest: config/manifests/feastoperator/
+  odh-spark-operator-module:
+    controllers:
+      odh-spark-operator:
+        src: config/
+        dest: config/
+  odh-trainer-operator:
+    controllers:
+      odh-trainer:
+        src: manifests/
+        dest: manifests/trainer/
+        ignore:
+          - params.env

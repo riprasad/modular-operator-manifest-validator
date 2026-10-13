@@ -1,0 +1,171 @@
+name: Modular Operators Manifest Validator
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_uri:
+        description: 'Image URI (e.g. quay.io/rhoai/rhoai-fbc-fragment:rhoai-3.5) or branch name (e.g. rhoai-3.5, rhoai-3.5-ea.1)'
+        required: true
+        type: string
+      build_type:
+        description: 'Build type (only applies when branch name is passed)'
+        required: false
+        type: choice
+        default: ci
+        options:
+          - ci
+          - nightly
+  workflow_call:
+    inputs:
+      image_uri:
+        description: 'Full FBC/Bundle image URI to validate with tag or digest'
+        required: true
+        type: string
+    secrets:
+      RHOAI_QUAY_RO_USERNAME:
+        required: true
+      RHOAI_QUAY_RO_TOKEN:
+        required: true
+
+env:
+  TRACER_OUTPUT_FILE: tracer-output.json
+  CONFIG_FILE: src/config/modular-manifests-map.yaml
+  EFFECTIVE_CONFIG_FILE: effective-modular-manifests-map.yaml
+  CLONE_DIR: cloned-repos
+  TOOLS_DIR: tools/modular-operators-manifest-validator
+
+jobs:
+  show-info:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Display workflow inputs
+        run: |
+          echo "### Modular Operators Manifest Validator" >> $GITHUB_STEP_SUMMARY
+          echo "**Input:** ${{ inputs.image_uri }}" >> $GITHUB_STEP_SUMMARY
+          if [[ -n "${{ inputs.build_type }}" ]]; then
+            echo "**Build type:** ${{ inputs.build_type }}" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  setup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      operators: ${{ steps.matrix.outputs.operators }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq skopeo
+
+      - name: Install yq
+        run: |
+          YQ_VERSION=v4.44.6
+          sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install pyyaml
+
+      - name: Setup Quay authentication
+        env:
+          RHOAI_QUAY_RO_USERNAME: ${{ secrets.RHOAI_QUAY_RO_USERNAME }}
+          RHOAI_QUAY_RO_TOKEN: ${{ secrets.RHOAI_QUAY_RO_TOKEN }}
+        run: |
+          mkdir -p /tmp/tracer-auth
+          echo -n "$RHOAI_QUAY_RO_USERNAME:$RHOAI_QUAY_RO_TOKEN" | base64 > /tmp/tracer-auth/quay_token
+          echo "SKOPEO_TOKEN_FILE_PATH=/tmp/tracer-auth/quay_token" >> $GITHUB_ENV
+
+      - name: Configure tracer authentication
+        run: |
+          bash tools/tracer/tracer.sh configure
+
+      - name: Run tracer
+        run: |
+          INPUT="${{ inputs.image_uri }}"
+          BUILD_TYPE="${{ inputs.build_type }}"
+          if [[ "${INPUT}" =~ ^rhoai-[0-9]+\.[0-9]+(-ea\.[0-9]+)?$ ]]; then
+            NIGHTLY_FLAG=""
+            if [[ "${BUILD_TYPE}" == "nightly" ]]; then
+              NIGHTLY_FLAG="--nightly"
+            fi
+            echo "[INFO]  Detected branch name: ${INPUT} (build_type: ${BUILD_TYPE:-ci})"
+            bash tools/tracer/tracer.sh -v "${INPUT}" ${NIGHTLY_FLAG} --show-commits -f json > "${TRACER_OUTPUT_FILE}"
+          else
+            echo "[INFO]  Detected image URI: ${INPUT}"
+            bash tools/tracer/tracer.sh --image "${INPUT}" --show-commits -f json > "${TRACER_OUTPUT_FILE}"
+          fi
+          echo "[OK]    Tracer output saved to: ${TRACER_OUTPUT_FILE}"
+
+      - name: Display tracer output
+        run: |
+          echo "[INFO]  Tracer output:"
+          cat "${TRACER_OUTPUT_FILE}" | jq .
+
+      - name: Prepare effective config
+        run: |
+          python3 "${TOOLS_DIR}/prepare_effective_config.py" "${TRACER_OUTPUT_FILE}" "${CONFIG_FILE}" "${EFFECTIVE_CONFIG_FILE}"
+
+      - name: Display effective config
+        run: |
+          echo "[INFO]  Effective config:"
+          cat "${EFFECTIVE_CONFIG_FILE}"
+
+      - name: Generate matrix
+        id: matrix
+        run: |
+          operators=$(yq -o json -I 0 '.modular_operators | keys' "${EFFECTIVE_CONFIG_FILE}")
+          echo "operators=${operators}" >> "$GITHUB_OUTPUT"
+          echo "[INFO]  Operators to validate: ${operators}"
+
+      - name: Upload effective config
+        uses: actions/upload-artifact@v4
+        with:
+          name: effective-config
+          path: ${{ env.EFFECTIVE_CONFIG_FILE }}
+
+  validate:
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        operator: ${{ fromJSON(needs.setup.outputs.operators) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Install yq
+        run: |
+          YQ_VERSION=v4.44.6
+          sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Download effective config
+        uses: actions/download-artifact@v4
+        with:
+          name: effective-config
+
+      - name: Clone repositories
+        run: |
+          bash "${TOOLS_DIR}/clone_repos.sh" \
+            --operator "${{ matrix.operator }}" \
+            --config "${EFFECTIVE_CONFIG_FILE}" \
+            --output "${CLONE_DIR}"
+
+      - name: Validate manifests
+        run: |
+          bash "${TOOLS_DIR}/validate_manifests.sh" \
+            --operator "${{ matrix.operator }}" \
+            --config "${EFFECTIVE_CONFIG_FILE}" \
+            --repos "${CLONE_DIR}"
